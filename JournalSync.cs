@@ -26,36 +26,51 @@ namespace LobsterConBackEnd
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)] HttpRequest req,
             ILogger log)
         {
-            log.LogInformation("JournalSync function is processing a request");
-
-            string syncFrom = req.Query["syncFrom"];
-            string remoteDevice = req.Query["remoteDevice"];
-
-            log.LogInformation("JournalSync: syncFrom = "+ syncFrom);
-            log.LogInformation("JournalSync: remoteDevice = " + remoteDevice);
-
-            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-
-            TableServiceClient serviceClient = new TableServiceClient(ConnectionString);
-            serviceClient.CreateTableIfNotExists("journal");
-            serviceClient.CreateTableIfNotExists("cloudseqnumber");
-
-            TableClient tcJournal = serviceClient.GetTableClient("journal");
-            TableClient tcCloudSeqNumber = serviceClient.GetTableClient("cloudseqnumber");
-
-            // Construct a response string consisting of all the journal entries having seq number after syncFrom
-            string responseMessage = FetchEntriesSince(syncFrom, tcJournal, log);
-
-            // If we've been asked to add some new journal entries to the journal table, then add them
-            if (!string.IsNullOrEmpty(requestBody.Trim()))
+            try
             {
-                AddNewRemoteEntries(requestBody, remoteDevice, tcJournal, tcCloudSeqNumber, log);
-            }
+                string syncFrom = req.Query["syncFrom"];
+                string remoteDevice = req.Query["remoteDevice"];
 
-            return new OkObjectResult(responseMessage);
+                log.LogInformation("JournalSync function is processing a request: syncFrom = " + syncFrom + ";  remoteDevice = " + remoteDevice);
+
+                string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+
+                TableServiceClient serviceClient = new TableServiceClient(ConnectionString);
+                serviceClient.CreateTableIfNotExists("journal");
+                serviceClient.CreateTableIfNotExists("cloudseqnumber");
+
+                TableClient tcJournal = serviceClient.GetTableClient("journal");
+                TableClient tcCloudSeqNumber = serviceClient.GetTableClient("cloudseqnumber");
+
+                // Construct a response string consisting of all the journal entries having seq number after syncFrom
+                string responseMessage = FetchEntriesSince(syncFrom, remoteDevice, tcJournal, log);
+
+                // If we've been asked to add some new journal entries to the journal table, then add them
+                if (!string.IsNullOrEmpty(requestBody.Trim()))
+                {
+                    // The method returns the entries (in a string, separated by \n) with updated cloud sequence numbers
+                    string updatedRemoteEntries = AddNewRemoteEntries(requestBody, remoteDevice, tcJournal, tcCloudSeqNumber, log);
+                    if (!string.IsNullOrEmpty(updatedRemoteEntries))
+                    {
+                        if (!string.IsNullOrEmpty(responseMessage))
+                            responseMessage += '\n';
+
+                        responseMessage += updatedRemoteEntries;
+                    }
+                }
+                log.LogInformation("JournalSync function has finished processing: syncFrom = " + syncFrom + ";  remoteDevice = " + remoteDevice);
+
+                return new OkObjectResult(responseMessage);
+            }
+            catch(Exception ex)
+            {
+                log.LogError(ex, "JournalSync threw an exception");
+
+                return new OkObjectResult("");
+            }
         }
 
-        public static string FetchEntriesSince(string syncFrom, TableClient tcJournal, ILogger log)
+        public static string FetchEntriesSince(string syncFrom, string remoteDevice, TableClient tcJournal, ILogger log)
         {
             try
             {
@@ -71,42 +86,80 @@ namespace LobsterConBackEnd
                     }
                 }
 
-                return string.Join('\n', fetched);
+                log.LogInformation("Fetched "+ fetched.Count.ToString() +" cloud entry/ies greater than " + syncFrom + " to be sent to " + remoteDevice);
+
+                if (fetched.Count == 0)
+                    return "";
+                else if (fetched.Count == 1)
+                    return fetched[0];
+                else
+                    return string.Join('\n', fetched);
             }
             catch (Exception ex)
             {
-                log.LogError(ex, "Failed to fetch cloud entries greater than " + syncFrom);
+                log.LogError(ex, "Failed to fetch cloud entries greater than " + syncFrom + " to be sent to " + remoteDevice);
                 return "";
             }
         }
 
-        public static void AddNewRemoteEntries(string remoteEntries, string remoteDevice, TableClient tcJournal, TableClient tcCloudSeqNumber, ILogger log)
+        public static string AddNewRemoteEntries(string remoteEntries, string remoteDevice, TableClient tcJournal, TableClient tcCloudSeqNumber, ILogger log)
         {
             try
             {
-                List<JournalEntry> toAdd = new List<JournalEntry>();
+                // First, obtain a list of all entries that we already received from this remote device
+                List<JournalEntry> existing = new List<JournalEntry>();
+                try
+                {
+                    Pageable<JournalEntry> queryResultsMaxPerPage = tcJournal.Query<JournalEntry>(e => e.RemoteDevice==remoteDevice);
+
+                    foreach (Page<JournalEntry> page in queryResultsMaxPerPage.AsPages())
+                    {
+                        foreach (JournalEntry e in page.Values)
+                        {
+                            existing.Add(e);
+                        }
+                    }
+
+                    log.LogInformation("There are " + existing.Count.ToString() + " existing cloud entry/ies for " + remoteDevice);
+
+                }
+                catch (Exception ex)
+                {
+                    log.LogError(ex, "Failed to fetch existing cloud entries for " + remoteDevice);
+                    return "";
+                }
+
+                List<JournalEntry> toProcess = new List<JournalEntry>(); // list of all the journal entries passed in this request from the remote device
+
+                List<string> returnValue = new List<string>(); // list of all the journal entries whose cloud seq numbers we want the remote device to update in its journal
+
+                List<JournalEntry> toAdd = new List<JournalEntry>(); // list of the journal entries that we want to generate new cloud seq numbers for
+
+
                 if (string.IsNullOrEmpty(remoteEntries))
                 {
-                    log.LogInformation("Adding 0 remote entries from " + remoteDevice);
+                    log.LogInformation("Processing no remote entries from " + remoteDevice);
                 }
                 else if (!remoteEntries.Contains('\n'))
                 {
-                    log.LogInformation("Adding 1 remote entry from " + remoteDevice);
-
                     JournalEntry e = JournalEntry.FromString(remoteEntries);
 
                     if (e == null)
                     {
                         log.LogError("remote entry is invalid: " + remoteEntries);
+                        log.LogInformation("Processing no remote entries from " + remoteDevice);
                     }
                     else
                     {
-                        toAdd.Add(e);
+                        toProcess.Add(e);
+                        log.LogInformation("Processing 1 remote entry from " + remoteDevice);
                     }
                 }
                 else
                 {
-                    foreach(string s in remoteEntries.Split('\n'))
+                    string[] rr = remoteEntries.Split('\n');
+
+                    foreach (string s in rr)
                     {
                         if (s == null || string.IsNullOrEmpty(s.Trim()))
                             continue;
@@ -119,11 +172,34 @@ namespace LobsterConBackEnd
                         }
                         else
                         {
-                            toAdd.Add(e);
+                            toProcess.Add(e);
                         }
                     }
+                    log.LogInformation("Processing " + toProcess.Count.ToString() + " remote entries from " + remoteDevice);
+                }
 
-                    log.LogInformation("Adding "+toAdd.Count.ToString()+" remote entries from " + remoteDevice);
+                // Check for any cloud entries that this remote devie has already told the cloud database abourt (this is an error case that could happen if the
+                // remote device sent a batch of changes to the cloud service, but disconnected or exited before writing them back to its local journal)
+                foreach (JournalEntry r in toProcess)
+                {
+                    // if the list of existing entries for this remote device contains an entry having the same remote seq number as r, then r is a duplicate - which must not be added again
+                    if (existing.Any(ee => ee.RemoteSeq == r.RemoteSeq))
+                    {
+                        JournalEntry duplicate = existing.Find(ee => ee.RemoteSeq == r.RemoteSeq);
+                        log.LogInformation("remote entry is a duplicate: " + r.ToString()+" and won't be assigned a new cloud seq number");
+                        if (!string.IsNullOrEmpty(r.RowKey))
+                        {
+                            log.LogError("the remote entry has a cloud seq number already - this is an error because remote devices shouldn't be asking the service to assign cloud seq numbers in this case");
+                        }
+                        else
+                        {
+                            returnValue.Add(duplicate.ToString()); // tell the remote device about the duplicate and its existing cloud seq number
+                        }
+                    }
+                    else
+                    {
+                        toAdd.Add(r);
+                    }
                 }
 
                 if (toAdd.Count > 0)
@@ -151,7 +227,7 @@ namespace LobsterConBackEnd
                             if(!response.HasValue)
                             {
                                 log.LogError("Problem with sequence number table: Failed to process remote entries for " + remoteDevice);
-                                return;
+                                return "";
                             }
                             CloudSeqNumber seqNumberRecord = response.Value;
 
@@ -179,15 +255,20 @@ namespace LobsterConBackEnd
                     }
                     while (clashingUpdate);
 
-                    // Now put the right cloud sequence numbers onto each journal record, and then insert it into the table
+                    log.LogInformation("Cloud seq number(s) [" + firstSeqNumberClaimed.ToString("X16")+ "..."+ (firstSeqNumberClaimed+ toAdd.Count-1).ToString("X16") + "] have been assigned for remote entries from " + remoteDevice);
+
+                    // Now put the right cloud sequence numbers onto each journal entry that we're going to add, and then insert it into the table.  Collect the list of entry strings that we will
+                    // return, so we can tell the caller what updated cloud sequence numbers to write back to its database
                     Int64 seq = firstSeqNumberClaimed;
+                    
                     foreach (JournalEntry e in toAdd)
                     {
-                        string rowKey= seq.ToString("X8");
+                        string rowKey= seq.ToString("X16");
                         try
                         {
                             e.RowKey = rowKey;
                             tcJournal.AddEntity<JournalEntry>(e);
+                            returnValue.Add(e.ToString());
                             seq++;
                         }
                         catch(Exception ex)
@@ -196,12 +277,26 @@ namespace LobsterConBackEnd
                             throw;
                         }
                     }
-                    
+                    log.LogInformation("Added " + toAdd.Count.ToString() + " journal entry/ies from device " + remoteDevice);
                 }
+                else // no entries were added to the cloud store
+                {
+                    log.LogInformation("Added no journal entries from device" + remoteDevice);
+                }
+
+                log.LogInformation("Returning " + returnValue.Count.ToString() + " journal entry/ies to device " + remoteDevice+ " with cloud seq numbers to be applied to the remote journal");
+
+                if (returnValue.Count == 0)
+                    return "";
+                else if (returnValue.Count == 1)
+                    return returnValue[0];
+                else
+                    return string.Join('\n', returnValue);
             }
             catch(Exception ex)
             {
-                log.LogError(ex, "Failed to add remote entries for " + remoteDevice);
+                log.LogError(ex, "Failed to process remote entries for " + remoteDevice);
+                return "";
             }
         }
 

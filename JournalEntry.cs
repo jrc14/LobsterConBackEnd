@@ -23,7 +23,7 @@ namespace LobsterConBackEnd
             this.EntityType = entityType;
             this.OperationType = operationType;
             this.EntityId = entityId;
-            this.Parameters = Parameters;
+            this.Parameters = parameters;
 
         }
 
