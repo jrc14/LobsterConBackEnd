@@ -215,7 +215,7 @@ namespace LobsterConBackEnd
                     }
 
 
-                    Int64 firstSeqNumberClaimed = 0;
+                    Int32 firstSeqNumberClaimed = 0;
                     // Claim the range of cloud seq numbers that we will need to use for these added entries
                     bool clashingUpdate;
                     do
@@ -255,15 +255,15 @@ namespace LobsterConBackEnd
                     }
                     while (clashingUpdate);
 
-                    log.LogInformation("Cloud seq number(s) [" + firstSeqNumberClaimed.ToString("X16")+ "..."+ (firstSeqNumberClaimed+ toAdd.Count-1).ToString("X16") + "] have been assigned for remote entries from " + remoteDevice);
+                    log.LogInformation("Cloud seq number(s) [" + firstSeqNumberClaimed.ToString("X8")+ "..."+ (firstSeqNumberClaimed+ toAdd.Count-1).ToString("X8") + "] have been assigned for remote entries from " + remoteDevice);
 
                     // Now put the right cloud sequence numbers onto each journal entry that we're going to add, and then insert it into the table.  Collect the list of entry strings that we will
                     // return, so we can tell the caller what updated cloud sequence numbers to write back to its database
-                    Int64 seq = firstSeqNumberClaimed;
+                    Int32 seq = firstSeqNumberClaimed;
                     
                     foreach (JournalEntry e in toAdd)
                     {
-                        string rowKey= seq.ToString("X16");
+                        string rowKey= seq.ToString("X8");
                         try
                         {
                             e.RowKey = rowKey;

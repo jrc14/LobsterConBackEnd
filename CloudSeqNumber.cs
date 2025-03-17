@@ -12,7 +12,7 @@ namespace LobsterConBackEnd
 
         }
 
-        public CloudSeqNumber(Int64 maxSeqNumber, string remoteDevice)
+        public CloudSeqNumber(Int32 maxSeqNumber, string remoteDevice)
         {
             this.PartitionKey = "1";
             this.RowKey = "1";
@@ -28,7 +28,7 @@ namespace LobsterConBackEnd
 
         public DateTimeOffset? Timestamp { get; set; } = default!;
 
-        public Int64 MaxSeqNumber { get; set; } = default!;
+        public Int32 MaxSeqNumber { get; set; } = default!;
 
         public string RemoteDevice { get; set; } = default!;
     }
