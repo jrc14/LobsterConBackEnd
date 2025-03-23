@@ -15,6 +15,7 @@ using System.Net.NetworkInformation;
 using Microsoft.WindowsAzure.Storage;
 using System.Net.Http.Headers;
 using System.Linq;
+using System.Runtime.Intrinsics.X86;
 
 
 namespace LobsterConBackEnd
@@ -30,37 +31,54 @@ namespace LobsterConBackEnd
             {
                 string syncFrom = req.Query["syncFrom"];
                 string remoteDevice = req.Query["remoteDevice"];
+                string purgeUser = req.Query["purgeUser"];
 
-                log.LogInformation("JournalSync function is processing a request: syncFrom = " + syncFrom + ";  remoteDevice = " + remoteDevice);
-
-                string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-
-                TableServiceClient serviceClient = new TableServiceClient(ConnectionString);
-                serviceClient.CreateTableIfNotExists("journal");
-                serviceClient.CreateTableIfNotExists("cloudseqnumber");
-
-                TableClient tcJournal = serviceClient.GetTableClient("journal");
-                TableClient tcCloudSeqNumber = serviceClient.GetTableClient("cloudseqnumber");
-
-                // Construct a response string consisting of all the journal entries having seq number after syncFrom
-                string responseMessage = FetchEntriesSince(syncFrom, remoteDevice, tcJournal, log);
-
-                // If we've been asked to add some new journal entries to the journal table, then add them
-                if (!string.IsNullOrEmpty(requestBody.Trim()))
+                if (string.IsNullOrEmpty(purgeUser)) // a regular sync request
                 {
-                    // The method returns the entries (in a string, separated by \n) with updated cloud sequence numbers
-                    string updatedRemoteEntries = AddNewRemoteEntries(requestBody, remoteDevice, tcJournal, tcCloudSeqNumber, log);
-                    if (!string.IsNullOrEmpty(updatedRemoteEntries))
+                    log.LogInformation("JournalSync function is processing a request: syncFrom = " + syncFrom + ";  remoteDevice = " + remoteDevice);
+
+                    string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+
+                    TableServiceClient serviceClient = new TableServiceClient(ConnectionString);
+                    serviceClient.CreateTableIfNotExists("journal");
+                    serviceClient.CreateTableIfNotExists("cloudseqnumber");
+
+                    TableClient tcJournal = serviceClient.GetTableClient("journal");
+                    TableClient tcCloudSeqNumber = serviceClient.GetTableClient("cloudseqnumber");
+
+                    // Construct a response string consisting of all the journal entries having seq number after syncFrom
+                    string responseMessage = FetchEntriesSince(syncFrom, remoteDevice, tcJournal, log);
+
+                    // If we've been asked to add some new journal entries to the journal table, then add them
+                    if (!string.IsNullOrEmpty(requestBody.Trim()))
                     {
-                        if (!string.IsNullOrEmpty(responseMessage))
-                            responseMessage += '\n';
+                        // The method returns the entries (in a string, separated by \n) with updated cloud sequence numbers
+                        string updatedRemoteEntries = AddNewRemoteEntries(requestBody, remoteDevice, tcJournal, tcCloudSeqNumber, log);
+                        if (!string.IsNullOrEmpty(updatedRemoteEntries))
+                        {
+                            if (!string.IsNullOrEmpty(responseMessage))
+                                responseMessage += '\n';
 
-                        responseMessage += updatedRemoteEntries;
+                            responseMessage += updatedRemoteEntries;
+                        }
                     }
-                }
-                log.LogInformation("JournalSync function has finished processing: syncFrom = " + syncFrom + ";  remoteDevice = " + remoteDevice);
+                    log.LogInformation("JournalSync function has finished processing: syncFrom = " + syncFrom + ";  remoteDevice = " + remoteDevice);
 
-                return new OkObjectResult(responseMessage);
+                    return new OkObjectResult(responseMessage);
+                }
+                else // purge user data requested
+                {
+                    log.LogInformation("JournalSync function is processing a request: purgeUser = " + purgeUser);
+
+                    TableServiceClient serviceClient = new TableServiceClient(ConnectionString);
+                    serviceClient.CreateTableIfNotExists("journal");
+                    TableClient tcJournal = serviceClient.GetTableClient("journal");
+
+                    string responseMessage = PurgeUserData(purgeUser, tcJournal, log);
+
+                    log.LogInformation("JournalSync function has finished processing: purgeUser = " + purgeUser);
+                    return new OkObjectResult(responseMessage);
+                }
             }
             catch(Exception ex)
             {
@@ -299,6 +317,107 @@ namespace LobsterConBackEnd
                 return "";
             }
         }
+
+        public static string PurgeUserData(string personHandle, TableClient tcJournal, ILogger log)
+        {
+            try
+            {
+                List<JournalEntry> fetched = new List<JournalEntry>();
+
+                Pageable<JournalEntry> queryResultsMaxPerPage = tcJournal.Query<JournalEntry>();
+
+                foreach (Page<JournalEntry> page in queryResultsMaxPerPage.AsPages())
+                {
+                    foreach (JournalEntry e in page.Values)
+                    {
+                        fetched.Add(e);
+                    }
+                }
+
+                log.LogInformation("Fetched " + fetched.Count.ToString() + " to be scrubbed of personal data for "+personHandle);
+
+                string returnValue = "";
+
+                int changes = 0;
+
+                foreach (JournalEntry e in fetched)
+                {
+                    try
+                    {
+                        if (e.EntityType == "Person")
+                        {
+                            if (e.EntityId == personHandle)
+                            {
+                                e.EntityId = "#deleted";
+                                e.Parameters = "";
+                                Response response = tcJournal.UpdateEntity(e, ETag.All, TableUpdateMode.Merge);
+                                changes++;
+                                if(response.IsError)
+                                {
+                                    log.LogInformation("PurgeUserData: Error response '" + response.ReasonPhrase +"' scrubbing personal data for " + personHandle+" from "+e.RowKey);
+                                }
+                            }
+                        }
+                        else if (e.EntityType == "Session")
+                        {
+                            if(e.Parameters.Contains("PROPOSER|"+personHandle))
+                            {
+                                e.Parameters = e.Parameters.Replace("PROPOSER|" + personHandle, "PROPOSER|#deleted");
+                                Response response = tcJournal.UpdateEntity(e, ETag.All, TableUpdateMode.Merge);
+                                changes++;
+                                if (response.IsError)
+                                {
+                                    log.LogInformation("PurgeUserData: Error response '" + response.ReasonPhrase + "' scrubbing personal data for " + personHandle + " from " + e.RowKey);
+                                }
+                            }
+                        }
+                        else if (e.EntityType == "SignUp")
+                        {
+                            bool changed = false;
+                            if(e.EntityId.StartsWith(personHandle+","))
+                            {
+                                string sessionId = e.EntityId.Split(',')[1];
+                                e.EntityId = "#deleted," + sessionId;
+                                changed = true;
+                            }
+
+                            if(e.Parameters.Contains("MODIFIEDBY|"+personHandle))
+                            {
+                                e.Parameters = e.Parameters.Replace("MODIFIEDBY|" + personHandle, "MODIFIEDBY|#deleted");
+                                changed = true;
+                            }
+
+                            if(changed)
+                            {
+                                Response response = tcJournal.UpdateEntity(e, ETag.All, TableUpdateMode.Merge);
+                                changes++;
+                                if (response.IsError)
+                                {
+                                    log.LogInformation("PurgeUserData: Error response '" + response.ReasonPhrase + "' scrubbing personal data for " + personHandle + " from " + e.RowKey);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            // do nothing
+                            
+                        }
+                        returnValue += e.ToString() + "\n"; 
+                    }
+                    catch (Exception ex)
+                    {
+                        log.LogInformation("PurgeUserData: Exception '" + ex.Message + "' scrubbing personal data for " + personHandle + " from " + e.RowKey);
+                    }
+                }
+                return returnValue;
+            }
+            catch (Exception ex)
+            {
+                log.LogError(ex, "Failed to purge cloud entries for "+personHandle);
+                return "";
+            }
+        }
+
 
         public static string ConnectionString = "DefaultEndpointsProtocol=https;AccountName=lobsterconresourceg9a08;AccountKey=G7wtsdCRCY1GFxvBd9/VQSdGTBunKe/U41MG+bG1BEcwTErLIfzRNIsW+uYzTh+EvsCDp11cE7z6+ASt3fEV9g==;EndpointSuffix=core.windows.net";
 
