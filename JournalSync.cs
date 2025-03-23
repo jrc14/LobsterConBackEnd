@@ -32,8 +32,18 @@ namespace LobsterConBackEnd
                 string syncFrom = req.Query["syncFrom"];
                 string remoteDevice = req.Query["remoteDevice"];
                 string purgeUser = req.Query["purgeUser"];
+                string nonce = req.Query["nonce"];
+                string signature = req.Query["signature"];
 
-                if (string.IsNullOrEmpty(purgeUser)) // a regular sync request
+                string toCheck = GetHashCodeForString(syncFrom + remoteDevice + purgeUser + nonce).ToString("X8");
+                if(signature!=toCheck)
+                {
+                    log.LogInformation("JournalSync function is rejecting a request: signature = " + signature + ";  should be " + toCheck);
+                    return new UnauthorizedObjectResult("signature is incorrect");
+                }
+
+
+                if (string.IsNullOrEmpty(purgeUser) && !string.IsNullOrEmpty(syncFrom) && !string.IsNullOrEmpty(remoteDevice)) // a regular sync request
                 {
                     log.LogInformation("JournalSync function is processing a request: syncFrom = " + syncFrom + ";  remoteDevice = " + remoteDevice);
 
@@ -66,7 +76,7 @@ namespace LobsterConBackEnd
 
                     return new OkObjectResult(responseMessage);
                 }
-                else // purge user data requested
+                else if (!string.IsNullOrEmpty(purgeUser) && string.IsNullOrEmpty(syncFrom) && string.IsNullOrEmpty(remoteDevice))// purge user data requested
                 {
                     log.LogInformation("JournalSync function is processing a request: purgeUser = " + purgeUser);
 
@@ -79,12 +89,17 @@ namespace LobsterConBackEnd
                     log.LogInformation("JournalSync function has finished processing: purgeUser = " + purgeUser);
                     return new OkObjectResult(responseMessage);
                 }
+                else
+                {
+                    log.LogError("JournalSync rejected a request having bad parameters");
+                    return new BadRequestResult();
+                }
             }
             catch(Exception ex)
             {
                 log.LogError(ex, "JournalSync threw an exception");
 
-                return new OkObjectResult("");
+                return new NotFoundResult();
             }
         }
 
@@ -318,6 +333,11 @@ namespace LobsterConBackEnd
             }
         }
 
+        // The 'purge' action will:
+        //  - Amend signup create/delete actions having that user id as first half of id (replacing user id with "#deleted"),
+        //  - Amend signup create/delete actions having MODIFIEDBY= that user (replacing user id with "#deleted")
+        //  - Amend person create/update actions, replacing ID with "#deleted" and removing all parameters
+        //  - Replace create/update sessions with the same, but with PROPOSER person handle replaced by "#deleted".
         public static string PurgeUserData(string personHandle, TableClient tcJournal, ILogger log)
         {
             try
@@ -334,7 +354,7 @@ namespace LobsterConBackEnd
                     }
                 }
 
-                log.LogInformation("Fetched " + fetched.Count.ToString() + " to be scrubbed of personal data for "+personHandle);
+                log.LogInformation("Fetched " + fetched.Count.ToString() + " journal entr(y/ies) to be scrubbed of personal data for "+personHandle);
 
                 string returnValue = "";
 
@@ -409,6 +429,9 @@ namespace LobsterConBackEnd
                         log.LogInformation("PurgeUserData: Exception '" + ex.Message + "' scrubbing personal data for " + personHandle + " from " + e.RowKey);
                     }
                 }
+
+                log.LogInformation("Changed " + changes.ToString() + " journal entr(y/ies) to remove personal data for " + personHandle);
+
                 return returnValue;
             }
             catch (Exception ex)
@@ -418,6 +441,32 @@ namespace LobsterConBackEnd
             }
         }
 
+        /// <summary>
+        /// Generate a hash code for strings that is consistent between instances and launches of the app (because lately String.GetHashCode() does not seem 
+        /// to be doing that for me.
+        /// </summary>
+        /// <param name="s"></param>
+        /// <returns></returns>
+        public static Int32 GetHashCodeForString(string s)
+        {
+            try
+            {
+                // 
+                int h = 0;
+                if (!string.IsNullOrEmpty(s))
+                {
+                    for (int i = 0; i < s.Length; i++)
+                    {
+                        h = 31 * h + s[i];
+                    }
+                }
+                return h;
+            }
+            catch (Exception e)
+            {
+                return 0;
+            }
+        }
 
         public static string ConnectionString = "DefaultEndpointsProtocol=https;AccountName=lobsterconresourceg9a08;AccountKey=G7wtsdCRCY1GFxvBd9/VQSdGTBunKe/U41MG+bG1BEcwTErLIfzRNIsW+uYzTh+EvsCDp11cE7z6+ASt3fEV9g==;EndpointSuffix=core.windows.net";
 
