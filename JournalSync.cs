@@ -6,6 +6,7 @@ using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using Azure.Data.Tables;
 using Azure;
@@ -20,7 +21,7 @@ using System.Runtime.Intrinsics.X86;
 
 namespace LobsterConBackEnd
 {
-    public static class JournalSync
+    public static partial class JournalSync 
     {
         [FunctionName("JournalSync")]
         public static async Task<IActionResult> Run(
@@ -41,7 +42,6 @@ namespace LobsterConBackEnd
                     log.LogInformation("JournalSync function is rejecting a request: signature = " + signature + ";  should be " + toCheck);
                     return new UnauthorizedObjectResult("signature is incorrect");
                 }
-
 
                 if (string.IsNullOrEmpty(purgeUser) && !string.IsNullOrEmpty(syncFrom) && !string.IsNullOrEmpty(remoteDevice)) // a regular sync request
                 {
@@ -468,7 +468,17 @@ namespace LobsterConBackEnd
             }
         }
 
-        public static string ConnectionString = "DefaultEndpointsProtocol=https;AccountName=lobsterconresourceg9a08;AccountKey=G7wtsdCRCY1GFxvBd9/VQSdGTBunKe/U41MG+bG1BEcwTErLIfzRNIsW+uYzTh+EvsCDp11cE7z6+ASt3fEV9g==;EndpointSuffix=core.windows.net";
+        /*
+         * To build a working function, create an addition source file in your project with content like:
+         * 
+        namespace LobsterConBackEnd
+        {
+            public static partial class JournalSync
+            {
+                public static string ConnectionString = "A CONNECTION STRING FROM THE AZURE PORTAL";
+            }
+        }
+        */
 
     }
 }
