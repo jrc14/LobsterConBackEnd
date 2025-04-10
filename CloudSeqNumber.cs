@@ -5,6 +5,9 @@ using Azure;
 
 namespace LobsterConBackEnd
 {
+    /// <summary>
+    /// The single-row table that keeps track of which cloud sequence number we will issue next, when we receive new journal entries to add to the cloud store.
+    /// </summary>
     record CloudSeqNumber : ITableEntity
     {
         public CloudSeqNumber()

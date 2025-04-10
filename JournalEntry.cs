@@ -6,6 +6,12 @@ using Microsoft.AspNetCore.JsonPatch.Operations;
 
 namespace LobsterConBackEnd
 {
+    /// <summary>
+    /// An entry in the LobsterConnect journal.  Refer to https://github.com/jrc14/LobsterConnect/blob/master/Model/Journal.cs for explanation of
+    /// how these things work.  Note that the cloud sync service uses a somewhat different definition, because it's organising journal entries
+    /// into database rows.  PartitionKey is the gaming event name (or "" for entries, such as 'create a person', that are not specific
+    /// to any one event).  RowKey is cloud sequence number.
+    /// </summary>
     record JournalEntry : ITableEntity
     {
         public JournalEntry()
@@ -27,6 +33,11 @@ namespace LobsterConBackEnd
 
         }
 
+        /// <summary>
+        /// The string representation of a journal entry consists of its elements separated by \ characters.  The last element, parameters, is optional and will be "" if absent.
+        /// </summary>
+        /// <param name="s"></param>
+        /// <returns></returns>
         public static JournalEntry FromString(string s)
         {
             string[] ss = s.Split('\\');
@@ -45,6 +56,10 @@ namespace LobsterConBackEnd
             }
         }
 
+        /// <summary>
+        /// The string representation of a journal entry consists of its elements separated by \ characters.  The last element, parameters, is optional and will left off if it's null or empty.
+        /// </summary>
+        /// <returns></returns>
         public override string ToString()
         {
             string s =
