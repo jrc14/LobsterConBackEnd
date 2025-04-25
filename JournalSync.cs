@@ -378,8 +378,8 @@ namespace LobsterConBackEnd
         ///  - Amend signup create/delete actions having that user id as first half of id (replacing user id with "#deleted"),
         ///  - Amend signup create/delete actions having MODIFIEDBY= that user (replacing user id with "#deleted")
         ///  - Amend person create/update actions, replacing ID with "#deleted" and removing all parameters
-        ///  - Amend wish-list create/update/delete actions, replacing the user id with "#deleted" and removing all parameters
--        ///  - Replace create/update sessions with the same, but with PROPOSER person handle replaced by "#deleted".
+        ///  - Amend wish-list create/update/delete actions, replacing the user id with "#deleted"person 
+        ///  - Replace create/update sessions with the same, but with PROPOSER person handle replaced by "#deleted".
         /// </summary>
         /// <param name="personHandle">the person whose details will be purged</param>
         /// <param name="tcJournal">the Journal table client</param>
