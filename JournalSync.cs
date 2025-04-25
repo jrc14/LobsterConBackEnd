@@ -427,14 +427,18 @@ namespace LobsterConBackEnd
                         }
                         else if (e.EntityType == "Session")
                         {
-                            if(e.Parameters.Contains("PROPOSER|"+personHandle))
+                            
+                            if(e.Parameters.Contains("PROPOSER|"+personHandle)) // will match some spurious cases (purging Bobby12, encountering a record for PROPOSER|Bobby1234)
                             {
-                                e.Parameters = e.Parameters.Replace("PROPOSER|" + personHandle, "PROPOSER|#deleted");
-                                Response response = tcJournal.UpdateEntity(e, ETag.All, TableUpdateMode.Merge);
-                                changes++;
-                                if (response.IsError)
+                                if (MatchParameter(e.Parameters, "PROPOSER", personHandle))
                                 {
-                                    log.LogInformation("PurgeUserData: Error response '" + response.ReasonPhrase + "' scrubbing personal data for " + personHandle + " from " + e.RowKey);
+                                    e.Parameters = e.Parameters.Replace("PROPOSER|" + personHandle, "PROPOSER|#deleted");
+                                    Response response = tcJournal.UpdateEntity(e, ETag.All, TableUpdateMode.Merge);
+                                    changes++;
+                                    if (response.IsError)
+                                    {
+                                        log.LogInformation("PurgeUserData: Error response '" + response.ReasonPhrase + "' scrubbing personal data for " + personHandle + " from " + e.RowKey);
+                                    }
                                 }
                             }
                         }
@@ -448,10 +452,13 @@ namespace LobsterConBackEnd
                                 changed = true;
                             }
 
-                            if(e.Parameters.Contains("MODIFIEDBY|"+personHandle))
+                            if(e.Parameters.Contains("MODIFIEDBY|"+personHandle)) // will match some spurious cases (purging Bobby12, encountering a record for MODIFIEDBY|Bobby1234)
                             {
-                                e.Parameters = e.Parameters.Replace("MODIFIEDBY|" + personHandle, "MODIFIEDBY|#deleted");
-                                changed = true;
+                                if (MatchParameter(e.Parameters, "MODIFIEDBY", personHandle))
+                                {
+                                    e.Parameters = e.Parameters.Replace("MODIFIEDBY|" + personHandle, "MODIFIEDBY|#deleted");
+                                    changed = true;
+                                }
                             }
 
                             if(changed)
@@ -506,6 +513,29 @@ namespace LobsterConBackEnd
                 log.LogError(ex, "Failed to purge cloud entries for "+personHandle);
                 return "";
             }
+        }
+
+        /// <summary>
+        /// Check whether the |-separated parameter list contains a parameter having name 'paramName' and value 'paramValue'.
+        /// </summary>
+        /// <param name="paramList"></param>
+        /// <param name="paramName"></param>
+        /// <param name="paramValue"></param>
+        /// <returns></returns>
+        static bool MatchParameter(string paramList, string paramName, string paramValue)
+        {
+            string[] p = paramList.Split('|');
+
+            for(int i=0; i<p.Length-1; i+=2)
+            {
+                string n = p[i];
+                string v = p[i + 1];
+
+                if (n == paramName)
+                    return v == paramValue;
+            }
+
+            return false;
         }
 
         /// <summary>
